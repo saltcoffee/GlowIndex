@@ -1,0 +1,27 @@
+{
+  "name": "huoshaoyun-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "火烧云（朝霞/晚霞）强度查询 API —— Cloudflare Workers 免费部署，零运行时依赖",
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node scripts/build.js",
+    "dev": "node scripts/dev-server.js",
+    "dev:mock": "node scripts/dev-server.js --mock",
+    "smoke": "node scripts/smoke.js",
+    "deploy": "node scripts/build.js && wrangler deploy"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "weather",
+    "sunset",
+    "sunrise",
+    "weatherapi",
+    "met-no"
+  ],
+  "license": "MIT"
+}

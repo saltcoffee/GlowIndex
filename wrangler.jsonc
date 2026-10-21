@@ -1,17 +1,17 @@
 {
   // 部署入口是 `npm run build` 生成的单文件产物，Dashboard 粘贴部署也能用。
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "huoshaoyun",
+  "name": "glowindex",
   "main": "dist/worker.js",
   "compatibility_date": "2026-09-01",
   "observability": {
-    "enabled": true
+    "enabled": true,
+    // address / lat / lon 位于查询串中；日志和追踪不得持久化这些值。
+    "redact_query_string": true,
+    "head_sampling_rate": 0.1
   },
   // 纯计算 + fetch，不需要 KV / D1 / R2；缓存用 Cache API，全部在免费额度内。
   "vars": {
-    "DEFAULT_DAYS": "2",
-    // MET Norway 要求 User-Agent 带真实联系方式（应用名 + 邮箱或网址），
-    // 部署前请把这里的网址换成你自己的；写 example.com 之类的占位会被 403。
-    "METNO_USER_AGENT": "huoshaoyun-api/1.2 (+https://sunset.redpencil.top)"
+    "DEFAULT_DAYS": "2"
   }
 }

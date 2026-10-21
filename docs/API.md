@@ -1,6 +1,6 @@
-# 接口参考
+# GlowIndex 接口参考
 
-Base URL 就是你的 Worker 域名，例如 `https://huoshaoyun.example.workers.dev`。所有接口都是 `GET`，返回 `application/json; charset=utf-8`，并且带 CORS（默认 `access-control-allow-origin: *`），浏览器可直接调用。不需要任何鉴权头——Key 只存在 Worker 内部。
+Base URL 就是你的 Worker 域名，例如 `https://glowindex.example.workers.dev`。所有接口都是 `GET`，返回 `application/json; charset=utf-8`，并且带 CORS（默认 `access-control-allow-origin: *`），浏览器可直接调用。不需要任何鉴权头——Key 只存在 Worker 内部。
 
 ---
 
@@ -26,7 +26,7 @@ Base URL 就是你的 Worker 域名，例如 `https://huoshaoyun.example.workers
 ```jsonc
 {
   "ok": true,
-  "algorithm": { "id": "huoshaoyun/1.0.0", "version": "1.0.0" },
+  "algorithm": { "id": "glowindex/1.2.3", "version": "1.2.3" },
   "generatedAt": "2026-10-18T07:20:03.114Z",
 
   "query": { "address": "北京", "lat": 39.9042, "lon": 116.4074, "event": "all", "days": 1, "detail": "standard" },
@@ -61,6 +61,9 @@ Base URL 就是你的 Worker 域名，例如 `https://huoshaoyun.example.workers
     { "name": "weatherapi", "role": "primary", "ok": true, "cached": false },
     { "name": "met.no", "role": "layered-clouds", "ok": true, "cached": false }
   ],
+
+  "attribution": [ /* 面向最终用户展示的数据源署名 */ ],
+  "disclaimer": "天气信息仅供一般参考……",
 
   "limitations": []   // 数据缺口的自然语言说明，空数组表示数据齐全
 }
@@ -108,7 +111,7 @@ Base URL 就是你的 Worker 域名，例如 `https://huoshaoyun.example.workers
 
   "weather": {
     "cloudTotal": 64, "cloudLow": 12, "cloudMid": 35, "cloudHigh": 55,
-    "layered": true,             // false 表示低/中/高云是推断出来的
+    "layered": true,             // 峰值时刻有有效分层数据；false 表示由该时刻基础天气推断
     "humidity": 46, "tempC": 25.1, "dewpointC": 12.1,
     "visKm": 22, "windKph": 12, "gustKph": 20,
     "precipMm": 0, "chanceOfRain": 0,
@@ -123,7 +126,7 @@ Base URL 就是你的 Worker 域名，例如 `https://huoshaoyun.example.workers
 
   "advice": ["低云 12%，地平线干净，光路通畅", "建议提前 25 分钟到位…"],
 
-  "confidence": 0.94,            // 0.35~0.98
+  "confidence": 0.94,            // 0.35~0.98，数据完整性/时效指标，不是档位命中概率
   "notes": []                    // 这一场特有的数据说明
 }
 ```
@@ -187,7 +190,7 @@ curl "https://<你的域名>/v1/geo?address=杭州市西湖区"
 健康检查，不访问任何上游，适合做可用性探针。
 
 ```jsonc
-{ "ok": true, "version": "1.0.0", "algorithm": "huoshaoyun/1.0.0",
+{ "ok": true, "version": "1.2.3", "algorithm": "glowindex/1.2.3",
   "configured": true, "time": "2026-10-18T07:21:00.000Z" }
 ```
 
@@ -197,7 +200,17 @@ curl "https://<你的域名>/v1/geo?address=杭州市西湖区"
 
 ## 4. `GET /`
 
-接口自述，返回路由、参数、档位说明。用来在浏览器里直接确认服务活着。
+接口自述，返回路由、参数、档位、数据署名与免责声明。用来在浏览器里直接确认服务活着。
+
+## 5. 数据署名与免责声明
+
+`GET /` 与 `GET /v1/glow` 的 `attribution` 和 `disclaimer` 字段给出面向最终用户的基础文案。使用这些数据的网站或应用应在界面中清晰展示：
+
+- `Powered by WeatherAPI.com`，并链接到 <https://www.weatherapi.com/>；
+- `分层云数据源：MET Norway（CC BY 4.0）；经 GlowIndex 转换与评分`，并链接到 [MET Norway 许可说明](https://docs.api.met.no/doc/License.html) 与 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)；
+- 天气预测仅供一般参考，不作为人身安全、航空、航海、应急规划或其他安全关键决策的唯一依据。
+
+完整说明见 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
 
 ---
 
@@ -239,9 +252,16 @@ curl "https://<你的域名>/v1/geo?address=杭州市西湖区"
 
 ## 缓存与一致性
 
-- 缓存**不是**缓存最终响应，而是缓存两样东西：**归一化后的天气包**（键为 `版本 + lat/lon/days`）和**地名解析结果**。
+- 缓存**不是**缓存最终响应，而是缓存三类内部数据：**WeatherAPI 归一化预报**（键为 `版本 + lat/lon/days`）、**MET Norway 分层云与验证器**（键为坐标）和**地名解析结果**。两份天气数据会在每次请求时即时合并。
 - 因此 `now / best / next` 的判断永远是请求当下的，不会拿到一份「昨晚的结论」。
-- 天气包 TTL **25 分钟**，地名 TTL **7 天**。命中缓存时 `dataSources[].cached` 为 `true`。
-- 缓存键包含**算法版本号**（如 `v=1.2.2`）：每次升级版本，旧缓存自动失效，发版后立刻能看到新结果。代价是发版后每个地点的第一次请求都会真实调用上游。
-- 缓存键只由版本、坐标、`days`、地址文本决定；加随机参数**不会**绕过缓存。这是故意的：避免有人用随机参数把上游免费额度刷光。
-- 想要更新鲜的数据，改 `days` 或换个地址即可；想彻底绕开缓存，只能改 `CACHE_TTL.forecast` 或直接删掉缓存逻辑。
+- WeatherAPI TTL **25 分钟**，地名 TTL **7 天**。MET Norway 独立遵守响应里的 `Expires`；到期后的下一次请求使用 `Last-Modified` / `ETag` 条件重验证，没提供有效缓存头时按 1 小时兜底。
+- `dataSources[].cached` 分别表示该来源是否从缓存复用；两个来源互不遮蔽，也不要求同时刷新。
+- WeatherAPI 缓存键包含**算法版本号**（如 `v=1.2.3`）：升级后旧的归一化结果自动失效；MET 原始分层云缓存与算法版本解耦，在仍新鲜时可继续复用。
+- 各命名空间只使用与自身语义有关的版本、坐标、`days` 或地址文本；添加陌生查询参数**不会**绕过缓存。这是故意的：避免有人用随机参数把上游免费额度刷光。
+- `days` 会改变 WeatherAPI 缓存键和 MET 返回裁剪范围，但不会让仍新鲜的 MET 数据重复下载。要调整刷新策略，请改 `src/config.js` 中对应 TTL，并继续遵守上游缓存要求。
+
+## 部署安全
+
+- 接口默认不鉴权且 `access-control-allow-origin: *`，适合本地体验，不代表公开实例天然具备滥用防护。
+- 上线前建议在 Cloudflare 配置 WAF / Rate Limiting 或自己的访问控制，重点限制随机 `address` / `lat` / `lon` 形成的高基数请求，避免 WeatherAPI 月度配额被消耗。
+- 可以设置 `ALLOW_ORIGIN=https://你的前端域名` 收紧浏览器跨域访问；**CORS 不是鉴权**，非浏览器客户端仍可直接请求。

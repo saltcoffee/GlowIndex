@@ -8,44 +8,38 @@
  *   GET /v1/geo               地址解析调试（不消耗预报配额）
  *
  * 设计要点：
- *   - 响应本身不缓存，缓存的是"归一化后的天气包"，所以 now/best 的判断永远新鲜；
+ *   - 响应本身不缓存，两个上游各自缓存归一化数据，所以 now/best 的判断永远新鲜；
  *   - WeatherAPI 是硬依赖，挂了就报错；MET Norway 这个附加源任何失败都只降级；
  *   - 错误一律返回结构化 JSON，前端不用猜 HTTP 语义。
  */
 
 import { ALGORITHM_ID, CACHE_TTL, LIMITS, VERSION } from './config.js';
 import { addressCandidates, resolveLocation } from './adapters/geocode.js';
-import { fetchLayers } from './adapters/metno.js';
-import { fetchForecast } from './adapters/weatherapi.js';
 import { analyzeEvents, pickBestEvent, toPublicEvent } from './core/analyze.js';
 import { LEVELS, levelPayload } from './core/levels.js';
-import { buildSeries } from './core/series.js';
-import { readCache, writeCache } from './lib/cache.js';
+import { createCacheKey, readCache, writeCache } from './lib/cache.js';
+import { ApiError } from './lib/errors.js';
 import { UpstreamError } from './lib/http.js';
 import { formatClock, formatDate } from './lib/time.js';
-
-/** 业务错误：带 HTTP 状态码和机器可读 code。 */
-class ApiError extends Error {
-  constructor(status, code, message, hint = null) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.code = code;
-    this.hint = hint;
-  }
-}
+import { loadBundle } from './services/load-bundle.js';
 
 /* ------------------------------------------------------------------ 工具 */
 
-const CACHE_HOST = 'https://cache.huoshaoyun.internal';
-
-function cacheUrl(path, params) {
-  const usp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null) usp.set(k, String(v));
-  }
-  return `${CACHE_HOST}${path}?${usp.toString()}`;
-}
+const ATTRIBUTION = [
+  {
+    source: 'WeatherAPI.com',
+    url: 'https://www.weatherapi.com/',
+    note: '免费套餐要求在面向用户的产品中标注 WeatherAPI.com 为数据来源',
+  },
+  {
+    source: 'MET Norway',
+    license: 'CC BY 4.0',
+    url: 'https://docs.api.met.no/doc/License.html',
+    note: '分层云数据源：MET Norway（CC BY 4.0）；经 GlowIndex 转换与评分',
+  },
+];
+const DISCLAIMER =
+  '天气信息仅供一般参考。预报具有概率性，可能与特定地点和时刻的实际情况不符；请勿将其作为人身安全、航空、航海、应急规划或其他安全关键决策的唯一依据，并请查阅当地官方气象机构发布的信息。';
 
 function normalizeAddress(address) {
   return String(address ?? '')
@@ -78,63 +72,6 @@ const EVENT_ALIASES = {
   晚霞: 'sunset',
   火烧云: 'all',
 };
-
-/* --------------------------------------------------------------- 数据装载 */
-
-/**
- * 取一个"归一化天气包"。这是唯一会打上游的地方，也是唯一被缓存的东西。
- * 命中缓存 ≈ 0 次上游调用。
- *
- * 两个上游：WeatherAPI（主：逐小时地面要素 + 日出日落，需要 Key）
- *           MET Norway（附：低/中/高分层云，免 Key，失败自动降级为推断）
- */
-async function loadBundle({ key, lat, lon, days, fetchImpl, metnoUserAgent }) {
-  // 缓存键里带上算法版本：发版后旧缓存自动失效，
-  // 避免"改了代码但接口还是旧结果"这种坑（第一次请求会打上游，之后照常走缓存）。
-  const cacheKey = cacheUrl('/bundle', {
-    v: VERSION,
-    lat: lat.toFixed(3),
-    lon: lon.toFixed(3),
-    days,
-  });
-
-  const hit = await readCache(cacheKey);
-  if (hit) return { bundle: hit.value, cached: true };
-
-  const [waSettled, mnSettled] = await Promise.allSettled([
-    fetchForecast({ key, lat, lon, days, fetchImpl }),
-    fetchLayers({ lat, lon, days, fetchImpl, userAgent: metnoUserAgent }),
-  ]);
-
-  if (waSettled.status === 'rejected') throw waSettled.reason;
-
-  const forecast = waSettled.value;
-  const metno =
-    mnSettled.status === 'fulfilled'
-      ? mnSettled.value
-      : { ok: false, series: null, error: String(mnSettled.reason?.message ?? mnSettled.reason) };
-
-  const hours = forecast.days.flatMap((d) => d.hours).filter((h) => h.t > 0);
-  if (hours.length === 0) {
-    throw new ApiError(502, 'UPSTREAM_EMPTY', '上游返回的逐小时数据为空', '换个地点或稍后重试');
-  }
-
-  const series = buildSeries({ hours, om: metno.series, aq: null });
-
-  const bundle = {
-    location: forecast.location,
-    days: forecast.days.map((d) => ({ date: d.date, astro: d.astro, day: d.day })),
-    series,
-    layered: Boolean(metno.series && metno.layered !== false),
-    upstream: {
-      weatherapi: { ok: true },
-      metno: metno.ok ? { ok: true } : { ok: false, error: metno.error ?? null },
-    },
-  };
-
-  await writeCache(cacheKey, bundle, CACHE_TTL.forecast);
-  return { bundle, cached: false };
-}
 
 /* ------------------------------------------------------------------ 路由 */
 
@@ -204,7 +141,7 @@ async function handleGlow(url, env) {
   if (lat != null && lon != null) {
     loc = { lat, lon, name: null, region: null, country: null, query: `${lat},${lon}`, resolved: 'coords', tried: [] };
   } else {
-    const geoKey = cacheUrl('/geo', { q: normalizeAddress(address) });
+    const geoKey = createCacheKey('geo', { q: normalizeAddress(address) });
     const geoHit = await readCache(geoKey);
     if (geoHit) {
       loc = geoHit.value;
@@ -224,7 +161,7 @@ async function handleGlow(url, env) {
   }
 
   // 2) 天气数据
-  const { bundle, cached } = await loadBundle({
+  const { bundle } = await loadBundle({
     key,
     lat: loc.lat,
     lon: loc.lon,
@@ -313,9 +250,21 @@ async function handleGlow(url, env) {
     events: publicEvents,
     levels: LEVELS.map(levelPayload),
     dataSources: [
-      { name: 'weatherapi', role: 'primary', ok: true, cached },
-      { name: 'met.no', role: 'layered-clouds', ok: Boolean(bundle.layered), cached },
+      {
+        name: 'weatherapi',
+        role: 'primary',
+        ok: true,
+        cached: Boolean(bundle.upstream?.weatherapi?.cached),
+      },
+      {
+        name: 'met.no',
+        role: 'layered-clouds',
+        ok: Boolean(bundle.layered),
+        cached: Boolean(bundle.upstream?.metno?.cached),
+      },
     ],
+    attribution: ATTRIBUTION,
+    disclaimer: DISCLAIMER,
     limitations,
   };
 
@@ -330,6 +279,7 @@ async function handleGlow(url, env) {
       score: e.score,
       level: e.level,
       confidence: e.confidence,
+      notes: e.notes,
       // 简报也要保留"往哪边看"，这是用户最关心的信息之一
       sun: { direction: e.sun?.direction ?? null, whereToLook: e.sun?.whereToLook ?? null },
       weather: e.weather
@@ -459,7 +409,8 @@ export default {
         return jsonResponse(
           {
             ok: true,
-            name: '火烧云强度查询 API',
+            name: 'GlowIndex',
+            description: '可解释的朝霞与晚霞强度预测 API',
             version: VERSION,
             algorithm: ALGORITHM_ID,
             usage: 'GET /v1/glow?address=北京市朝阳区&days=2',
@@ -479,15 +430,8 @@ export default {
             },
             levels: LEVELS.map((l) => `${l.name}(${l.min}-${Math.min(l.max, 100)})`),
             // 数据源署名要求，详见 README
-            attribution: [
-              { source: 'WeatherAPI.com', url: 'https://www.weatherapi.com/' },
-              {
-                source: 'MET Norway',
-                license: 'CC BY 4.0',
-                url: 'https://www.met.no/en/About-us/terms-of-use',
-                note: '分层云数据来自 MET Norway；对外展示时请保留署名',
-              },
-            ],
+            attribution: ATTRIBUTION,
+            disclaimer: DISCLAIMER,
           },
           200,
           env,

@@ -11,4 +11,8 @@ WEATHERAPI_KEY=在这里填你的key
 
 # MET Norway 要求 User-Agent 带真实联系方式（应用名 + 邮箱或网址）。
 # 不填会用一个默认值，但建议改成你自己的；写 example.com 之类的占位会被 403。
-# METNO_USER_AGENT=huoshaoyun-api/1.2 (+https://your-site.example.org)
+# 默认值会使用 GlowIndex 的 GitHub 仓库地址；分叉部署时请改成你自己的真实联系方式。
+# METNO_USER_AGENT=GlowIndex/1.2.3 (+https://github.com/your-name/your-repo)
+
+# 可选：只允许你的前端域名发起浏览器跨域请求。CORS 不是鉴权，公开部署仍需限流。
+# ALLOW_ORIGIN=https://your-app.example

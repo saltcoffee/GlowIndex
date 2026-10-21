@@ -1,6 +1,15 @@
-# 火烧云 API · 朝霞晚霞强度查询
+# GlowIndex
 
-传一个地址，返回**今晚/明早会不会烧、烧到什么程度、为什么、几点几分该往哪边看**。
+[![CI](https://github.com/saltcoffee/GlowIndex/actions/workflows/ci.yml/badge.svg)](https://github.com/saltcoffee/GlowIndex/actions/workflows/ci.yml)
+[![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**可解释的朝霞 / 晚霞强度预测 API。** 传一个地址，返回今晚或明早会不会烧、烧到什么程度、为什么、几点几分该往哪边看。
+
+[接口文档](docs/API.md) · [算法与调参](docs/ALGORITHM.md) · [参与贡献](CONTRIBUTING.md) · [安全策略](SECURITY.md)
+
+> [!CAUTION]
+> GlowIndex 只面向观赏和摄影参考。天气预报具有概率性，不应用作人身安全、航空、航海、应急规划或其他安全关键决策的唯一依据；此类场景请查阅当地官方气象机构的信息。
 
 ```
 GET /v1/glow?address=北京市朝阳区
@@ -17,7 +26,11 @@ GET /v1/glow?address=北京市朝阳区
 
 ## 30 秒先看效果（不需要任何 Key）
 
+需要 Node.js 22 或更高版本。项目没有运行时依赖，克隆后可以直接启动：
+
 ```bash
+git clone https://github.com/saltcoffee/GlowIndex.git
+cd GlowIndex
 npm run dev:mock
 ```
 
@@ -31,7 +44,7 @@ curl "http://127.0.0.1:8787/v1/glow?address=北京"
 
 ## 接真实数据（需要 WeatherAPI 免费 Key）
 
-1. 到 <https://www.weatherapi.com/signup.aspx> 注册，免费额度 **100 万次/月**，控制台首页就能看到 Key。
+1. 到 <https://www.weatherapi.com/signup.aspx> 注册，当前免费额度为 **10 万次/月**，控制台首页就能看到 Key。额度以 [官方定价页](https://www.weatherapi.com/pricing.aspx) 为准。
 2. 把 `.dev.vars.example` 复制成 `.dev.vars`（已 gitignore），填入 Key：
 
    ```bash
@@ -59,10 +72,10 @@ curl "http://127.0.0.1:8787/v1/glow?address=杭州市西湖区&days=2"
 1. 打包出单文件产物：
 
    ```bash
-   npm run build      # 生成 dist/worker.js（约 95KB，自包含）
+   npm run build      # 生成 dist/worker.js（约 100KB，自包含）
    ```
 
-2. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Worker** → 随便起个名字（比如 `huoshaoyun`）→ **Deploy**。
+2. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Worker** → 随便起个名字（比如 `glowindex`）→ **Deploy**。
 3. 点 **Edit code**，把编辑器里默认的示例代码**全部删掉**，粘贴 `dist/worker.js` 的完整内容 → **Deploy**。
 4. 进这个 Worker 的 **Settings → Variables and Secrets**，添加：
    - 类型：**Secret**
@@ -89,30 +102,32 @@ npm run deploy             # 内部会先 build，再 wrangler deploy
 
 | 项目 | 免费额度 | 本项目消耗 |
 | --- | --- | --- |
-| Cloudflare Workers | 10 万次请求/天，单次 10ms CPU | 单次计算约 2–4ms，纯计算无 IO 阻塞 |
-| Cloudflare 缓存 | Cache API 免费 | 缓存天气包 25 分钟 |
-| WeatherAPI | 100 万次/月，3 天预报 | 一次查询最多 1 次预报调用 |
-| MET Norway | 免费、可商用、无需 Key，限 20 请求/秒 | 每次查询 1 次（分层云），失败自动降级 |
+| Cloudflare Workers | 10 万次请求/天，单次 10ms CPU | 命中缓存仍需执行评分；以部署后的 CPU 指标与压测为准 |
+| Cloudflare 缓存 | Cache API 免费 | WeatherAPI 缓存 25 分钟；MET 独立按上游 `Expires` 缓存 |
+| WeatherAPI | 10 万次/月，3 天预报 | 一次查询最多 1 次预报调用 |
+| MET Norway | 免费、可商用、无需 Key，限 20 请求/秒 | 独立缓存未命中或需重验证时调用，失败自动降级 |
 
-算一下：同一个地点被连续查询一整天，因为缓存 25 分钟，最多也只消耗 **约 58 次** WeatherAPI 调用和 **约 58 次** MET Norway 调用。100 万/月 ≈ 3.3 万次/天，够 **500 多个地点**全天候盯着。个人和小团队用，基本不会触顶。
+同一个地点被连续查询时，25 分钟的主源预报缓存会显著减少 WeatherAPI 调用；MET Norway 数据则独立遵守响应里的 `Expires`，过期后携带 `Last-Modified` / `ETag` 条件重验证。两份数据会在每次请求时即时合并，不会用一个来源的 TTL 遮住另一个来源。免费额度和条款可能调整，部署前请同时查看 [Cloudflare Workers 限额](https://developers.cloudflare.com/workers/platform/limits/)、[WeatherAPI 定价](https://www.weatherapi.com/pricing.aspx) 与 [MET Norway 使用条款](https://docs.api.met.no/doc/TermsOfService.html)，不要把这里的示例当成长期配额承诺。
 
-不需要 KV / D1 / R2 / 队列——这是刻意设计的：全部落在免费额度内。
+不需要 KV / D1 / R2 / 队列；日常低流量部署可以从免费套餐开始，并按实际用量监控配额。
 
 ### 为什么用 MET Norway 而不是 Open-Meteo
 
-早期版本用 Open-Meteo 提供分层云，后来换掉了，原因有两条：
+早期版本用 Open-Meteo 提供分层云。当前选择 MET Norway 主要基于：
 
-1. **授权**：Open-Meteo 免费额度仅限**非商业用途**；MET Norway 的数据是 CC BY 4.0，**允许商用**，只要署名。
-2. **额度归属**：Open-Meteo 免费版按**源 IP** 限「1 万次/天、5 千次/时、600 次/分」，而 Worker 的出口 IP 是 **Cloudflare 的共享 IP**——额度不是你独享的，可能被同一出口上的其他应用挤到 429。MET Norway 只限 20 请求/秒，没有每日上限。
+1. **授权**：Open-Meteo 的[免费 API 条款](https://open-meteo.com/en/terms)限非商业用途；MET Norway 的数据采用 CC BY 4.0，允许商用并要求署名。
+2. **接入**：MET Norway 免 Key，直接提供低 / 中 / 高云量与同源温湿数据，适合保持轻量部署。
+
+Open-Meteo 当前条款已说明 Cloudflare Workers 按 Cloudflare 用户计限流，不能再把「共享出口 IP 一定共享配额」作为当前选型依据。两家服务的限额与条款都可能调整。
 
 代价是 **失去气溶胶 AOD**（MET Norway 不提供）。通透度因子会自动把权重重新归一化到「能见度 / 露点差 / 湿度」三项，结论仍然成立，只是少了霾/沙尘这一维。
 
 如果以后想加回 AOD，思路是在 `buildSeries` 的 `aq` 参数里塞一个只含 `{t, aod}` 的序列——接口已经预留好了。
 
-> MET Norway 的两个硬性要求：请求必须带**真实的 User-Agent**（含应用名和联系方式，写 `example.com` 之类占位会被 WAF 直接 403），以及必须缓存。默认 UA 在 `src/adapters/metno.js` 里，部署前请改成你自己的网址或邮箱。
+> MET Norway 的两个硬性要求：请求必须带**真实的 User-Agent**（含应用名和联系方式，写 `example.com` 之类占位会被 WAF 直接 403），并遵守其缓存响应头。GlowIndex 会按 `Expires` 缓存，并在过期后用验证器做条件请求。官方仓库默认使用项目 GitHub 地址；分叉部署时请通过 `METNO_USER_AGENT` 改成你自己的真实网址或邮箱。
 **失败或被限流了会怎样**：MET Norway 超时、429 或 403 → `Promise.allSettled` 兜底 → 自动降级为「总云量推断分层」，此时 `dataSources[].ok=false`、`limitations` 里写明原因、`confidence` 扣 0.21。**服务不会挂**，只是精度下降。这是刻意设计的降级路径。
 
-> ⚠️ 免费额度仅限**非商业用途**。如果要做成收费产品、或挂在商业产品里，按条款需要购买商业授权（有独立服务器 + API Key，无每日上限）。
+> WeatherAPI 当前允许免费套餐用于商业项目，但免费用户也必须标注数据来源；具体边界以其最新的[使用条款](https://www.weatherapi.com/terms)为准。
 
 ---
 
@@ -165,14 +180,17 @@ npm run deploy             # 内部会先 build，再 wrangler deploy
 
 ```
 src/
-  index.js              Worker 入口：路由、参数校验、缓存、错误码
+  index.js              Worker 入口：路由、参数校验、响应与错误映射
   config.js             所有可调参数（权重、阈值、窗口、缓存时间）
+  services/
+    load-bundle.js      上游编排、降级与各数据源的独立缓存契约
   lib/
     solar.js            太阳位置（日出日落、高度角、方位角），纯数学
     time.js             时区换算（DST、半小时时区都能正确处理）
     mathx.js            分段线性插值等数值工具
-    http.js             带超时/重试的 JSON 请求
-    cache.js            Cache API + 内存兜底
+    http.js             带超时/重试、状态码与缓存头的 JSON 请求
+    cache.js            稳定缓存键、Cache API + 内存兜底
+    errors.js           应用层结构化错误
   adapters/
     weatherapi.js       主数据源 + 地名搜索
     metno.js            分层云（MET Norway，免 Key、可商用、失败可降级）
@@ -183,7 +201,7 @@ src/
     analyze.js          事件编排：采样、取峰值、置信度
     advice.js           把因子翻译成人话
     levels.js           分数 → 档位
-test/                   58 个测试（天文、模型、编排、接口、打包）
+test/                   自动化测试（天文、模型、编排、接口、打包）
 tools/mock-data.js      合成天气数据（开发/测试用，不进产物）
 scripts/
   build.js              零依赖打包成单文件 Worker
@@ -195,8 +213,9 @@ docs/ALGORITHM.md       算法与调参手册
 ## 常用命令
 
 ```bash
-npm test          # 跑全部测试（58 个）
+npm test          # 跑全部测试
 npm run build     # 打包 dist/worker.js
+npm run check     # 测试 + 构建，和 CI 一致
 npm run dev       # 本地起服务（真实上游）
 npm run dev:mock  # 本地起服务（合成数据，无需 Key）
 npm run smoke https://你的域名.workers.dev   # 部署后自检
@@ -217,24 +236,32 @@ npm run smoke https://你的域名.workers.dev   # 部署后自检
 ## 常见问题
 
 **Q：为什么结果和我肉眼判断不一致？**
-预报本身有误差，尤其是 3 天后的云量。我们给了 `confidence` 字段：低于 0.6 时建议临近时段再看一次。另外模型看的是「最佳观赏窗口内的潜力」，不是某一瞬间。
+预报本身有误差，尤其是 3 天后的云量。`confidence` 是数据完整性和预报时效指标，不是档位命中概率。分层源未覆盖评分时段时会降级推断，并在 `notes` / `limitations` 说明；1.2.3 已修复将日落后的云量向前复制、导致杭州误报世纪大烧的问题，详见 [复盘](docs/ALGORITHM.md#12-2026-10-18-杭州误报复盘123-修复)。模型评估的是最佳观赏窗口内的潜力。
 
 **Q：为什么有时没有低/中/高云，只有总云量？**
 那说明 MET Norway 拿不到数据，已降级成「用总云量 + 湿度 + 能见度推断」，`limitations` 里会写明，置信度也会扣分。主流程不会因为一个附加源挂掉而失败。
 
 **Q：能不能只算晚霞？**
-`?event=sunset`，响应体积和上游调用都会更少。
+`?event=sunset`，返回的事件更少、响应更小；上游天气获取策略不变。
 
 **Q：WeatherAPI 的 Key 会不会泄露给前端？**
 不会。Key 只存在于 Worker 的 Secret 里，浏览器拿不到；前端调你的 Worker 地址即可。也正因为如此，别把 Key 写进任何前端代码或公开仓库。
 
-## 许可与署名
+## 参与和安全
 
-代码本身 MIT。但**数据源有署名要求**，对外提供服务时请务必保留：
+- 提交问题或代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。算法和阈值修改需要可复现样本与回归测试。
+- 安全漏洞不要发公开 Issue，请按 [SECURITY.md](SECURITY.md) 私密报告。
+- 社区互动遵循 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 
-- **MET Norway** — 分层云数据，授权 **CC BY 4.0**。要求：署名 + 注明许可 + 说明是否改动。建议在页面底部写：`分层云数据来自 MET Norway（CC BY 4.0）`，并链接到 <https://www.met.no/>。
-- **WeatherAPI.com** — 按其免费套餐条款使用（非商业）。如果做商业产品，需要升级到其付费方案。
+公开部署前请为 Worker 配置 Cloudflare WAF / Rate Limiting 或自己的访问控制，尤其要限制随机 `address` / `lat` / `lon` 造成的高基数请求，否则攻击者仍可能绕开地点缓存并耗尽 WeatherAPI 配额。`ALLOW_ORIGIN` 可以把浏览器跨域调用限制到你的前端域名，但 **CORS 不是鉴权**，不能替代限流或访问控制。
 
-`GET /` 的响应里已经内置了 `attribution` 字段，方便前端直接渲染。
+## 许可、数据来源与免责声明
 
-代码本身以 **MIT** 许可发布。
+代码以 [MIT License](LICENSE) 发布。上游天气数据不因本项目的代码许可证而重新授权；部署者和下游产品仍需遵守各数据源条款：
+
+- **MET Norway** — 分层云数据采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。展示时请注明 `分层云数据源：MET Norway（CC BY 4.0）；经 GlowIndex 转换与评分`，并链接其[许可说明](https://docs.api.met.no/doc/License.html)。
+- **WeatherAPI.com** — 免费用户必须标注 WeatherAPI.com 为数据来源；当前套餐允许商业使用。请同时遵守其[署名说明](https://www.weatherapi.com/docs/attribution/)与[使用条款](https://www.weatherapi.com/terms)。
+
+`GET /` 与 `GET /v1/glow` 的响应都内置了署名和免责声明信息，方便前端渲染。更完整的义务和建议文案见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+天气信息仅供一般参考，可能与特定地点和时刻的实际情况不符。请勿将其作为任何安全关键决策的唯一依据。

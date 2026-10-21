@@ -87,18 +87,80 @@ describe('MET Norway 适配器', () => {
       return new Response(JSON.stringify(makeMetNoForecast({ days: 3 })), { status: 200 });
     };
 
-    const r = await fetchLayers({
+    const response = await fetchLayers({
       lat: 39.9,
       lon: 116.4,
-      days: 2,
       fetchImpl,
-      userAgent: 'huoshaoyun-api/1.2 (+https://sunset.redpencil.top)',
+      userAgent: 'GlowIndex/1.2.3 (+https://github.com/saltcoffee/GlowIndex)',
     });
 
-    assert.equal(seen, 'huoshaoyun-api/1.2 (+https://sunset.redpencil.top)');
-    assert.equal(r.ok, true);
-    // 只保留需要的天数（days=2 → 最多到 now+3 天）
-    const limit = Date.now() + 3 * 86400000;
-    assert.ok(r.series.every((row) => row.t <= limit));
+    assert.equal(seen, 'GlowIndex/1.2.3 (+https://github.com/saltcoffee/GlowIndex)');
+    assert.equal(response.kind, 'data');
+    assert.equal(response.result.ok, true);
+  });
+
+  it('条件请求原样发送验证器，并接受 304', async () => {
+    let seen = null;
+    const nowMs = Date.UTC(2026, 9, 21, 0, 0, 0);
+    const fetchImpl = async (_url, init) => {
+      seen = init?.headers;
+      return new Response(null, {
+        status: 304,
+        headers: {
+          date: new Date(nowMs).toUTCString(),
+          expires: new Date(nowMs + 30 * 60000).toUTCString(),
+          'last-modified': 'Tue, 20 Oct 2026 23:00:00 GMT',
+          etag: '"forecast-v2"',
+        },
+      });
+    };
+
+    const response = await fetchLayers({
+      lat: 39.9,
+      lon: 116.4,
+      fetchImpl,
+      nowMs,
+      validators: {
+        lastModified: 'Tue, 20 Oct 2026 22:00:00 GMT',
+        etag: '"forecast-v1"',
+      },
+    });
+
+    assert.equal(seen['if-modified-since'], 'Tue, 20 Oct 2026 22:00:00 GMT');
+    assert.equal(seen['if-none-match'], '"forecast-v1"');
+    assert.equal(response.kind, 'not-modified');
+    assert.equal(response.freshUntil, nowMs + 30 * 60000);
+    assert.equal(response.lastModified, 'Tue, 20 Oct 2026 23:00:00 GMT');
+    assert.equal(response.etag, '"forecast-v2"');
+  });
+
+  it('新的 200 响应不沿用旧实体的验证器', async () => {
+    const response = await fetchLayers({
+      lat: 39.9,
+      lon: 116.4,
+      validators: { lastModified: 'Tue, 20 Oct 2026 22:00:00 GMT', etag: '"old"' },
+      fetchImpl: async () => new Response(JSON.stringify(makeMetNoForecast({ days: 1 }))),
+    });
+
+    assert.equal(response.kind, 'data');
+    assert.equal(response.lastModified, null);
+    assert.equal(response.etag, null);
+  });
+
+  it('有效但已到期的 Expires 不会被一小时兜底覆盖', async () => {
+    const nowMs = Date.UTC(2026, 9, 21, 0, 0, 0);
+    const response = await fetchLayers({
+      lat: 39.9,
+      lon: 116.4,
+      nowMs,
+      fetchImpl: async () => new Response(JSON.stringify(makeMetNoForecast({ days: 1 })), {
+        headers: {
+          date: new Date(nowMs).toUTCString(),
+          expires: new Date(nowMs - 60000).toUTCString(),
+        },
+      }),
+    });
+
+    assert.equal(response.freshUntil, nowMs);
   });
 });

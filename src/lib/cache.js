@@ -2,13 +2,24 @@
  * 缓存。
  *
  * Workers 里用 Cache API（免费、无需 KV）；本地 Node / 测试环境自动退回内存 Map。
- * 缓存的是"上游原始 JSON"，不是最终响应——这样同一份天气数据可以服务多条查询，
- * 也能显著压低 WeatherAPI 的月度调用量。
+ * 缓存的是归一化天气数据和上游缓存元数据，不是最终响应——这样同一份天气数据
+ * 可以服务多条查询，也能显著压低上游调用量。
  */
 
 import { CACHE_TTL } from '../config.js';
 
 const memory = new Map(); // key -> {value, exp}
+const CACHE_HOST = 'https://cache.glowindex.internal';
+
+/** 创建只在内部 Cache API 使用的稳定 URL。 */
+export function createCacheKey(namespace, params = {}) {
+  const usp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null) usp.set(key, String(value));
+  }
+  const query = usp.toString();
+  return `${CACHE_HOST}/${namespace}${query ? `?${query}` : ''}`;
+}
 
 function memorySet(key, value, ttlSec) {
   if (memory.size >= CACHE_TTL.memoryMax) {

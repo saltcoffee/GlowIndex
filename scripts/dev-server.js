@@ -85,7 +85,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   const base = `http://127.0.0.1:${PORT}`;
   console.log('');
-  console.log(`火烧云 API 已启动：${base}`);
+  console.log(`GlowIndex 已启动：${base}`);
   console.log(`模式：${USE_MOCK ? '离线合成数据（--mock）' : '真实上游'}`);
   if (!USE_MOCK && !env.WEATHERAPI_KEY) {
     console.log('');

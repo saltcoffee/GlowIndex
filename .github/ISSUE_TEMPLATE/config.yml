@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密报告安全漏洞
+    url: https://github.com/saltcoffee/GlowIndex/security/policy
+    about: 请不要在公开 Issue 中披露未修复漏洞或真实密钥。

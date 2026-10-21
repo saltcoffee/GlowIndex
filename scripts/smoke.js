@@ -1,7 +1,7 @@
 /**
  * 部署后自检：对着一个线上（或本地）地址把关键路径走一遍。
  *
- *   node scripts/smoke.js https://huoshaoyun.xxx.workers.dev
+ *   node scripts/smoke.js https://glowindex.xxx.workers.dev
  *   node scripts/smoke.js                      # 默认打本地 8787
  *
  * 退出码 0 = 全绿，1 = 有问题。适合塞进 CI 或发布后手动跑一遍。

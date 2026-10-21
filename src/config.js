@@ -5,8 +5,8 @@
  *   总分 = Σ(权重 × 因子得分) × 100 + 修正项，映射到六档强度。
  */
 
-export const VERSION = '1.2.2';
-export const ALGORITHM_ID = `huoshaoyun/${VERSION}`;
+export const VERSION = '1.2.3';
+export const ALGORITHM_ID = `glowindex/${VERSION}`;
 
 /**
  * 六个因子的权重，必须加起来等于 1。
@@ -52,7 +52,9 @@ export const LIMITS = {
 };
 
 export const CACHE_TTL = {
-  forecast: 1500, // 25 分钟：天气数据缓存
+  forecast: 1500, // 25 分钟：WeatherAPI 归一化预报缓存
+  metnoMetadata: 86400, // 24 小时：保留响应缓存头，以便过期后做条件请求
+  metnoFallback: 3600, // 上游没给缓存头时，至少 1 小时后才重取
   geocode: 604800, // 7 天：地名解析结果
   response: 600, // 10 分钟：整个响应缓存
   memoryMax: 400, // 无 Cache API 时的内存兜底条数

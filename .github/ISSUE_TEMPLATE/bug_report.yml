@@ -1,0 +1,73 @@
+name: Bug 报告
+description: 报告可复现的程序错误、接口异常或明显误判
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请勿粘贴 API Key、精确住址或其他敏感信息；模型问题提供城市级地点通常已经足够。安全漏洞请改用仓库 Security 页面的私密报告入口。
+
+  - type: input
+    id: version
+    attributes:
+      label: GlowIndex 版本
+      description: 可填写响应中的 algorithm.version、Git commit 或部署日期。
+      placeholder: 例如 1.2.3 或 abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 运行环境
+      options:
+        - Cloudflare Workers
+        - 本地 mock 服务
+        - 本地真实上游
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 给出脱敏后的请求、时间、城市级地点和必要配置。
+      placeholder: |
+        1. 启动方式……
+        2. 请求 GET /v1/glow?...
+        3. 在……时出现问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 可附脱敏后的响应、错误和日志；不要包含密钥。
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 其他上下文
+      description: 模型误判可补充实际观测、照片时间、云层或降水信息。
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，没有找到同一问题。
+          required: true
+        - label: 我已移除 API Key、精确住址和其他敏感信息。
+          required: true

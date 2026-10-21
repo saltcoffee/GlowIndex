@@ -132,7 +132,7 @@ export function build() {
 
   const modules = [...records.keys()].sort();
   const out = `/**
- * 火烧云（朝霞/晚霞）强度查询 API —— 单文件 Worker 产物
+ * GlowIndex —— 可解释的朝霞与晚霞强度预测 API 单文件 Worker 产物
  *
  * 由 scripts/build.js 从 src/ 自动生成，请勿手动修改。
  * 部署：把本文件内容粘贴到 Cloudflare Dashboard 的 Worker 编辑器中，

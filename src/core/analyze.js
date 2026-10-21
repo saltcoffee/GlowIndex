@@ -32,12 +32,13 @@ const rn = (v, d = 0) => (v == null || Number.isNaN(v) ? null : round(v, d));
 
 /**
  * 置信度：不参与打分，只告诉用户"这个结论有多可信"。
- * 缺分层云 / 缺 AOD / 预报时效远 / 云量剧烈波动，都会降分。
+ * 窗口缺分层云 / 天气覆盖不全 / 预报时效远 / 云量剧烈波动，都会降分。
  */
-function estimateConfidence({ sampleLayered, layered, dayIndex, astroDriftMin, spread }) {
+function estimateConfidence({ windowLayered, coverage, layered, dayIndex, astroDriftMin, spread }) {
   let c = 0.94;
-  if (!sampleLayered) c -= 0.16; // 云层是推断出来的，最关键变量不可靠
+  if (!windowLayered) c -= 0.16; // 窗口内用了推断，就不能视为全程有真实分层数据
   if (!layered) c -= 0.05;
+  c -= 0.18 * (1 - coverage);
   c -= Math.min(0.18, 0.06 * dayIndex); // 第 3 天明显不如第 1 天
   if (astroDriftMin != null && Math.abs(astroDriftMin) > 3) c -= 0.03;
   if (spread > 25) c -= 0.08;
@@ -45,10 +46,11 @@ function estimateConfidence({ sampleLayered, layered, dayIndex, astroDriftMin, s
   return clamp(round(c, 2), 0.35, 0.98);
 }
 
-function buildNotes({ layered, sampleLayered, dayIndex, astroDriftMin }) {
+function buildNotes({ layered, windowLayered, coverage, dayIndex, astroDriftMin }) {
   const notes = [];
   if (!layered) notes.push('未拿到分层云量，低/中/高云由总云量与湿度推断，误差较大');
-  else if (!sampleLayered) notes.push('该时段缺少分层云量，已用相邻时段插值');
+  else if (!windowLayered) notes.push('该评分窗口内缺少有效分层云量的时段，已由对应时刻的总云量与湿度推断，误差较大');
+  if (coverage < 1) notes.push('逐小时天气未完整覆盖评分窗口，已跳过缺失时段，峰值可能遗漏');
   if (dayIndex >= 1) notes.push(`这是第 ${dayIndex + 1} 天的预报，时效越长不确定性越大`);
   if (astroDriftMin != null && Math.abs(astroDriftMin) > 3) {
     notes.push(`上游日出日落时刻与天文计算相差约 ${astroDriftMin} 分钟，已以上游为准`);
@@ -123,6 +125,9 @@ function buildEvent({
   const precipWindowMax = maxPrecip(series, startMs, endMs);
 
   let best = null;
+  let eligibleSamples = 0;
+  let availableSamples = 0;
+  let windowLayered = true;
   const timelineBySlot = new Map();
   // 色彩最浓的时刻通常落后于日落（约 +8 分钟）、早于日出（约 -8 分钟）。
   // 分数接近时用这个"偏好时刻"打破平手，让 peakTime 更符合实际观感。
@@ -131,9 +136,12 @@ function buildEvent({
   for (let t = startMs; t <= endMs + 1; t += stepMs) {
     const sun = sunElevationAzimuth(lat, lon, t);
     if (sun.elevation < LIMITS.elevation.min || sun.elevation > LIMITS.elevation.max) continue;
+    eligibleSamples += 1;
 
     const weather = sampleSeries(series, t);
-    if (!weather) break;
+    if (!weather) continue;
+    availableSamples += 1;
+    if (!weather.layered) windowLayered = false;
 
     const rainBefore = sumPrecip(series, t - 12 * MS_HOUR, t - MS_HOUR);
     const evaluated = evaluateSample({
@@ -159,29 +167,15 @@ function buildEvent({
     }
   }
 
-  // 兜底：窗口内一个可用点都没有（例如序列没覆盖到那天）
-  if (!best) {
-    const weather = sampleSeries(series, centerMs);
-    if (!weather) return null;
-    const sun = sunElevationAzimuth(lat, lon, centerMs);
-    best = {
-      t: centerMs,
-      elevation: sun.elevation,
-      azimuth: sun.azimuth,
-      weather,
-      ...evaluateSample({
-        elevation: sun.elevation,
-        weather,
-        rainBefore: sumPrecip(series, centerMs - 12 * MS_HOUR, centerMs - MS_HOUR),
-        precipWindowMax,
-      }),
-    };
-  }
+  // 没有真实覆盖的采样点就不构造事件，禁止拿窗口外的天气补出一次预报。
+  if (!best) return null;
 
   const level = levelFor(best.score);
+  const coverage = availableSamples / eligibleSamples;
   const spread = cloudSpread(series, startMs, endMs);
   const confidence = estimateConfidence({
-    sampleLayered: Boolean(best.weather.layered),
+    windowLayered,
+    coverage,
     layered,
     dayIndex,
     astroDriftMin,
@@ -189,7 +183,8 @@ function buildEvent({
   });
   const notes = buildNotes({
     layered,
-    sampleLayered: Boolean(best.weather.layered),
+    windowLayered,
+    coverage,
     dayIndex,
     astroDriftMin,
   });

@@ -68,6 +68,23 @@ describe('GET /v1/glow 正常路径', () => {
     assert.equal(headers.get('content-type'), 'application/json; charset=utf-8');
   });
 
+  it('可用 ALLOW_ORIGIN 收紧浏览器跨域来源', async () => {
+    const { headers } = await call(
+      '/v1/glow?address=北京',
+      makeEnv({ ALLOW_ORIGIN: 'https://app.example.test' }),
+    );
+    assert.equal(headers.get('access-control-allow-origin'), 'https://app.example.test');
+  });
+
+  it('主响应携带数据源署名与安全免责声明', async () => {
+    const { body } = await call('/v1/glow?address=北京');
+    assert.ok(body.attribution.some((item) => item.source === 'WeatherAPI.com'));
+    assert.ok(body.attribution.some((item) => item.source === 'MET Norway'));
+    assert.match(body.disclaimer, /安全关键决策/);
+    assert.match(body.disclaimer, /概率性/);
+    assert.match(body.disclaimer, /官方气象机构/);
+  });
+
   it('event=sunset 只返回晚霞', async () => {
     const { body } = await call('/v1/glow?address=北京&event=sunset');
     assert.ok(body.events.length > 0);
@@ -210,5 +227,7 @@ describe('缓存与健康检查', () => {
     assert.equal(body.ok, true);
     assert.ok(body.endpoints['GET /v1/glow']);
     assert.ok(Array.isArray(body.levels));
+    assert.ok(Array.isArray(body.attribution));
+    assert.match(body.disclaimer, /安全关键决策/);
   });
 });

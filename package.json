@@ -1,27 +1,40 @@
 {
-  "name": "huoshaoyun-api",
-  "version": "1.0.0",
+  "name": "glowindex",
+  "version": "1.2.3",
   "private": true,
   "type": "module",
-  "description": "火烧云（朝霞/晚霞）强度查询 API —— Cloudflare Workers 免费部署，零运行时依赖",
+  "description": "GlowIndex：可解释的朝霞与晚霞强度预测 API，运行于 Cloudflare Workers",
   "scripts": {
     "test": "node --test test/",
     "build": "node scripts/build.js",
+    "check": "npm test && npm run build",
     "dev": "node scripts/dev-server.js",
     "dev:mock": "node scripts/dev-server.js --mock",
     "smoke": "node scripts/smoke.js",
     "deploy": "node scripts/build.js && wrangler deploy"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "keywords": [
+    "glowindex",
     "cloudflare-workers",
     "weather",
     "sunset",
     "sunrise",
+    "sunset-prediction",
+    "sunrise-prediction",
     "weatherapi",
     "met-no"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saltcoffee/GlowIndex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/saltcoffee/GlowIndex/issues"
+  },
+  "homepage": "https://github.com/saltcoffee/GlowIndex#readme",
+  "author": "saltcoffee",
   "license": "MIT"
 }

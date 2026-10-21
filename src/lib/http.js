@@ -14,19 +14,21 @@ export class UpstreamError extends Error {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * GET 一个 JSON。
+ * GET 一个 JSON，并保留状态码与响应头供需要遵守上游缓存语义的适配器使用。
  * @param {string} url
  * @param {object} [opts]
  * @param {number} [opts.timeoutMs] 单次尝试的超时
  * @param {number} [opts.retries] 失败重试次数
  * @param {Function} [opts.fetchImpl] 注入用（测试里替换）
+ * @param {number[]} [opts.acceptedStatuses] 除 2xx 外仍视为成功的状态码
  */
-export async function getJson(url, opts = {}) {
+export async function getJsonWithMeta(url, opts = {}) {
   const {
     timeoutMs = 7000,
     retries = 1,
     retryDelayMs = 250,
     headers = {},
+    acceptedStatuses = [],
     fetchImpl = globalThis.fetch,
   } = opts;
 
@@ -45,7 +47,11 @@ export async function getJson(url, opts = {}) {
     try {
       const res = await fetchImpl(url, {
         signal: controller.signal,
-        headers: { accept: 'application/json', 'user-agent': 'huoshaoyun-api/1.0', ...headers },
+        headers: {
+          accept: 'application/json',
+          'user-agent': 'GlowIndex (+https://github.com/saltcoffee/GlowIndex)',
+          ...headers,
+        },
       });
 
       const text = await res.text();
@@ -58,7 +64,7 @@ export async function getJson(url, opts = {}) {
         }
       }
 
-      if (!res.ok) {
+      if (!res.ok && !acceptedStatuses.includes(res.status)) {
         const retryable = res.status >= 500 || res.status === 429;
         if (retryable && attempt < retries) {
           lastError = new UpstreamError(`upstream HTTP ${res.status}`, {
@@ -74,10 +80,20 @@ export async function getJson(url, opts = {}) {
         });
       }
 
-      if (data == null) {
+      if (data == null && res.status !== 304) {
         throw new UpstreamError('upstream 返回了非 JSON 内容', { status: res.status });
       }
-      return data;
+      return {
+        data,
+        status: res.status,
+        headers: {
+          date: res.headers.get('date'),
+          expires: res.headers.get('expires'),
+          cacheControl: res.headers.get('cache-control'),
+          lastModified: res.headers.get('last-modified'),
+          etag: res.headers.get('etag'),
+        },
+      };
     } catch (err) {
       if (err instanceof UpstreamError) {
         if (err.retryable && attempt < retries) {
@@ -97,6 +113,12 @@ export async function getJson(url, opts = {}) {
   }
 
   throw lastError ?? new UpstreamError('upstream 请求失败');
+}
+
+/** GET 一个 JSON；不需要响应元数据的调用方使用这个精简接口。 */
+export async function getJson(url, opts = {}) {
+  const response = await getJsonWithMeta(url, opts);
+  return response.data;
 }
 
 /** 拼 query string，自动跳过 null/undefined。 */

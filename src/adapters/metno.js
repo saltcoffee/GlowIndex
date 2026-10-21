@@ -5,9 +5,9 @@
  *   MET Norway  → 低/中/高云量、气温、露点、相对湿度（决定"画布"和"干湿"）
  *   WeatherAPI  → 能见度、风、降水、日出日落（这些 met.no 这个产品不提供）
  *
- * 为什么换掉 Open-Meteo：
- *   - Open-Meteo 免费版按 IP 限 1 万次/天；Worker 走 Cloudflare 共享出口 IP，
- *     额度不是独享的；且免费额度仅限非商业用途。
+ * 为什么使用 MET Norway：
+ *   - Open-Meteo 的免费 API 限非商业用途，MET Norway 允许商用；
+ *   - 无需 Key，直接提供分层云与同源温湿数据。
  *   - MET Norway 数据是 CC BY 4.0：**允许商用**，只需署名；限流只有 20 请求/秒，
  *     没有每日上限；免费、无需 Key。
  *
@@ -17,18 +17,34 @@
  * 使用条件（来自其 ToS，务必遵守）：
  *   - 请求必须带可识别且**真实**的 User-Agent（应用名 + 联系方式），
  *     伪造或随机字符串会被永久封禁；也不要写 example.com 之类的占位域名，会被 WAF 直接 403；
- *   - 必须缓存、不要高频重复请求（我们已有 25 分钟缓存）；
+ *   - 必须遵守 Expires，并在过期后携带 Last-Modified / ETag 做条件重验证；
  *   - 超过 20 请求/秒需要单独申请。
  */
 
-import { HTTP, SOURCES, VERSION } from '../config.js';
-import { getJson, withQuery } from '../lib/http.js';
+import { CACHE_TTL, HTTP, SOURCES, VERSION } from '../config.js';
+import { getJsonWithMeta, UpstreamError, withQuery } from '../lib/http.js';
 
-/** 默认 UA：含应用名、版本和可联系到你的网址。部署时请改成你自己的。 */
-export const DEFAULT_USER_AGENT = `huoshaoyun-api/${VERSION} (+https://sunset.redpencil.top)`;
+/** 默认 UA：官方仓库可联系地址；分叉部署可通过环境变量覆盖。 */
+export const DEFAULT_USER_AGENT = `GlowIndex/${VERSION} (+https://github.com/saltcoffee/GlowIndex)`;
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const round4 = (v) => Math.round(Number(v) * 10000) / 10000;
+
+function freshUntilFrom(headers, nowMs) {
+  const expiresMs = Date.parse(headers?.expires ?? '');
+  const serverDateMs = Date.parse(headers?.date ?? '');
+
+  // 用服务器 Date→Expires 的相对间隔映射到本机时间，避免两边时钟偏差。
+  if (Number.isFinite(expiresMs) && Number.isFinite(serverDateMs)) {
+    return nowMs + Math.max(0, expiresMs - serverDateMs);
+  }
+  if (Number.isFinite(expiresMs)) return Math.max(nowMs, expiresMs);
+
+  const maxAge = /(?:^|,)\s*max-age=(\d+)/i.exec(headers?.cacheControl ?? '');
+  if (maxAge) return nowMs + Number(maxAge[1]) * 1000;
+
+  return nowMs + CACHE_TTL.metnoFallback * 1000;
+}
 
 /**
  * 把 MET Norway 的 locationforecast 响应归一化成"分层云 + 温湿"序列。
@@ -75,30 +91,53 @@ export function normalizeMetNo(data) {
  * 拉取分层云。
  * @param {object} params
  * @param {string} [params.userAgent] 必须是可识别的真实 UA
- * @returns {Promise<{ok: boolean, series: object[]|null, layered?: boolean, error?: string}>}
+ * @param {{lastModified?: string|null, etag?: string|null}} [params.validators]
+ * @param {number} [params.nowMs]
+ * @returns {Promise<object>} data 或 not-modified 判别结果，以及可持久化的缓存元数据
  */
-export async function fetchLayers({ lat, lon, days, fetchImpl, userAgent = DEFAULT_USER_AGENT }) {
+export async function fetchLayers({
+  lat,
+  lon,
+  fetchImpl,
+  userAgent = DEFAULT_USER_AGENT,
+  validators = {},
+  nowMs = Date.now(),
+}) {
   // 只有 complete 变体带 low/medium/high 三个字段（compact 只有总云量）
   const url = withQuery(`${SOURCES.metno}/complete`, {
     lat: round4(lat),
     lon: round4(lon),
   });
 
-  const data = await getJson(url, {
+  const headers = { 'user-agent': userAgent };
+  if (validators.lastModified) headers['if-modified-since'] = validators.lastModified;
+  if (validators.etag) headers['if-none-match'] = validators.etag;
+
+  const response = await getJsonWithMeta(url, {
     timeoutMs: HTTP.metnoTimeoutMs,
     retries: HTTP.retries,
     retryDelayMs: HTTP.retryDelayMs,
     fetchImpl,
-    headers: { 'user-agent': userAgent },
+    headers,
+    acceptedStatuses: [304],
   });
 
-  const result = normalizeMetNo(data);
+  const notModified = response.status === 304;
+  const metadata = {
+    freshUntil: freshUntilFrom(response.headers, nowMs),
+    lastModified:
+      response.headers.lastModified ?? (notModified ? validators.lastModified ?? null : null),
+    etag: response.headers.etag ?? (notModified ? validators.etag ?? null : null),
+  };
 
-  // 只保留需要的天数，减少后续插值开销（接口默认给 9–10 天）
-  if (result.series && days) {
-    const until = Date.now() + (days + 1) * 86400000;
-    result.series = result.series.filter((r) => r.t <= until);
+  if (notModified) {
+    if (!validators.lastModified && !validators.etag) {
+      throw new UpstreamError('MET Norway 返回 304，但本地没有可复用的缓存验证器', {
+        status: 304,
+      });
+    }
+    return { kind: 'not-modified', ...metadata };
   }
 
-  return result;
+  return { kind: 'data', result: normalizeMetNo(response.data), ...metadata };
 }

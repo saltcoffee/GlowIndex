@@ -3,17 +3,24 @@
 .dev.vars.*
 # 模板必须提交，否则别人 clone 后不知道要配哪些变量
 !.dev.vars.example
+!.dev.vars.*.example
 
 # 通用环境变量文件（万一以后接别的工具）
 .env
 .env.*
 !.env.example
+!.env.*.example
+
+# direnv 的本地环境配置可能含密钥
+.envrc
+.direnv/
 
 # 证书 / 私钥
 *.pem
 *.key
 *.crt
 *.p12
+*.pfx
 
 # ── 依赖与构建产物 ────────────────────────────────────────────
 node_modules/
@@ -27,20 +34,41 @@ worker-configuration.d.ts
 
 # npm 缓存（本机调试时用过）
 .npm-cache/
+.npm/
+
+# 开发工具的可重建缓存
+.cache/
 
 # ── 测试与覆盖率 ──────────────────────────────────────────────
 coverage/
 .nyc_output/
+*.lcov
+
+# Node 诊断文件可能包含环境变量、请求内容或进程内存
+/report.*.json
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
+.node_repl_history
 
 # ── 系统 / 编辑器 ────────────────────────────────────────────
 .DS_Store
+._*
 Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+.history/
 
 # ── 临时文件 ──────────────────────────────────────────────────
 *.log
 *.tmp
 *.swp
+*.swo
+*~
+*.pid
+*.pid.lock
+.tmp/
+tmp/
+temp/
 tmp-*

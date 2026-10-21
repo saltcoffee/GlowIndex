@@ -2,6 +2,20 @@
 
 import { ramp } from '../lib/mathx.js';
 
+// 主序列保留基础天气，MET 温湿独立保存；这样跨覆盖边界时能完全回退到同一基础源。
+// 使用普通对象保存，经过缓存的 JSON 序列化后仍保留来源边界。
+const LAYER_WEATHER_FIELDS = ['rh', 'tempC', 'dewC'];
+
+function sampledWeather(row) {
+  const { layerWeather, ...out } = row;
+  if (out.layered && layerWeather) {
+    for (const key of LAYER_WEATHER_FIELDS) {
+      if (layerWeather[key] != null) out[key] = layerWeather[key];
+    }
+  }
+  return out;
+}
+
 /** 参与插值的数值字段。 */
 export const NUMERIC_FIELDS = [
   'cloudTotal',
@@ -37,12 +51,15 @@ export function inferLayers({ cloudTotal = 0, rh = null, visKm = null, precipMm 
   return { low: t * 0.45, mid: t * 0.35, high: t * 0.2 };
 }
 
-/** 在序列里线性插值取任意时刻的值（超出两端取端点）。 */
+/** 仅在序列真实覆盖范围内线性插值；范围外不外推。 */
 export function sampleSeries(series, tMs) {
-  if (!series || series.length === 0) return null;
-  if (tMs <= series[0].t) return { ...series[0], t: tMs };
+  if (!series?.length || !Number.isFinite(tMs)) return null;
+  const first = series[0];
   const last = series[series.length - 1];
-  if (tMs >= last.t) return { ...last, t: tMs };
+  if (tMs < first.t || tMs > last.t) return null;
+
+  if (tMs === first.t) return sampledWeather(first);
+  if (tMs === last.t) return sampledWeather(last);
 
   let lo = 0;
   let hi = series.length - 1;
@@ -53,17 +70,29 @@ export function sampleSeries(series, tMs) {
   }
   const a = series[lo];
   const b = series[hi];
-  const span = b.t - a.t;
-  const f = span === 0 ? 0 : (tMs - a.t) / span;
+  if (tMs === a.t) return sampledWeather(a);
+  if (tMs === b.t) return sampledWeather(b);
+  const f = (tMs - a.t) / (b.t - a.t);
 
-  const out = { t: tMs, layered: f < 0.5 ? a.layered : b.layered };
+  const out = { t: tMs, layered: a.layered === true && b.layered === true };
   for (const key of NUMERIC_FIELDS) {
     const av = a[key];
     const bv = b[key];
-    if (av == null && bv == null) out[key] = null;
-    else if (av == null) out[key] = bv;
-    else if (bv == null) out[key] = av;
-    else out[key] = av + (bv - av) * f;
+    // 单侧缺失意味着该字段没有覆盖整个区间，不能借用另一端补齐。
+    out[key] = av == null || bv == null ? null : av + (bv - av) * f;
+  }
+  if (out.layered && a.layerWeather && b.layerWeather) {
+    for (const key of LAYER_WEATHER_FIELDS) {
+      const av = a.layerWeather[key];
+      const bv = b.layerWeather[key];
+      if (av != null && bv != null) out[key] = av + (bv - av) * f;
+    }
+  } else if (Boolean(a.layered) !== Boolean(b.layered)) {
+    // 真分层与推断小时之间没有完整的分层覆盖，不能按最近端点宣称有真分层。
+    const inferred = inferLayers(out);
+    out.cloudLow = inferred.low;
+    out.cloudMid = inferred.mid;
+    out.cloudHigh = inferred.high;
   }
   out.conditionText = f < 0.5 ? a.conditionText : b.conditionText;
   return out;
@@ -91,82 +120,79 @@ export function maxPrecip(series, fromMs, toMs) {
   return max;
 }
 
+/** 在已覆盖的基础天气上合并同一时刻的补充数据。 */
+function mergeSources(weather, omAt, aqAt) {
+  if (!weather) return null;
+  const base = { ...weather };
+  if (omAt && omAt.cloudLow != null && omAt.cloudMid != null && omAt.cloudHigh != null) {
+    base.cloudLow = omAt.cloudLow;
+    base.cloudMid = omAt.cloudMid;
+    base.cloudHigh = omAt.cloudHigh;
+    base.layered = true;
+    base.layerWeather = {};
+    for (const key of LAYER_WEATHER_FIELDS) {
+      base.layerWeather[key] = omAt[key] ?? null;
+    }
+  } else {
+    const inferred = inferLayers(base);
+    base.cloudLow = inferred.low;
+    base.cloudMid = inferred.mid;
+    base.cloudHigh = inferred.high;
+    base.layered = false;
+  }
+  base.aod = aqAt?.aod ?? null;
+  return base;
+}
+
 /**
  * 生成主序列。
  * @param {object[]} hours WeatherAPI 的逐小时数组（作为时间骨架，保证覆盖预报时段）
- * @param {object|null} om MET Norway 的分层云序列（只含 t / cloudLow / cloudMid / cloudHigh）
- * @param {object|null} aq AOD 序列
+ * @param {object[]|null} om MET Norway 的分层云序列
+ * @param {object[]|null} aq AOD 序列
  */
 export function buildSeries({ hours, om, aq }) {
-  const rows = [];
-  for (const h of hours) {
-    const base = {
-      t: h.t,
-      cloudTotal: h.cloudTotal ?? null,
-      rh: h.rh ?? null,
-      tempC: h.tempC ?? null,
-      dewC: h.dewC ?? null,
-      visKm: h.visKm ?? null,
-      windKph: h.windKph ?? null,
-      gustKph: h.gustKph ?? null,
-      precipMm: h.precipMm ?? null,
-      chanceRain: h.chanceRain ?? null,
-      uv: h.uv ?? null,
-      conditionText: h.condition ?? null,
-      layered: false,
-      aod: null,
-      cloudLow: null,
-      cloudMid: null,
-      cloudHigh: null,
-    };
-
-    const omAt = om ? sampleSeries(om, h.t) : null;
-    if (omAt && omAt.cloudLow != null && omAt.cloudMid != null && omAt.cloudHigh != null) {
-      base.cloudLow = omAt.cloudLow;
-      base.cloudMid = omAt.cloudMid;
-      base.cloudHigh = omAt.cloudHigh;
-      base.layered = true;
-      // 分层源更细的字段优先用于通透度判断
-      if (omAt.rh != null) base.rh = omAt.rh;
-      if (omAt.tempC != null) base.tempC = omAt.tempC;
-      if (omAt.dewC != null) base.dewC = omAt.dewC;
-      if (omAt.visKm != null) base.visKm = omAt.visKm;
-      if (omAt.windKph != null) base.windKph = omAt.windKph;
-      if (omAt.gustKph != null) base.gustKph = omAt.gustKph;
-      if (omAt.precipMm != null) base.precipMm = omAt.precipMm;
-    } else {
-      const inferred = inferLayers({
-        cloudTotal: base.cloudTotal ?? 0,
-        rh: base.rh,
-        visKm: base.visKm,
-        precipMm: base.precipMm,
-      });
-      base.cloudLow = inferred.low;
-      base.cloudMid = inferred.mid;
-      base.cloudHigh = inferred.high;
-      base.layered = false;
-    }
-
-    if (aq) {
-      const aqAt = sampleSeries(aq, h.t);
-      if (aqAt && aqAt.aod != null) base.aod = aqAt.aod;
-    }
-
-    rows.push(base);
-  }
-
-  rows.sort((a, b) => a.t - b.t);
-  return rows;
+  const weather = hours.map((h) => ({
+    t: h.t,
+    cloudTotal: h.cloudTotal ?? null,
+    rh: h.rh ?? null,
+    tempC: h.tempC ?? null,
+    dewC: h.dewC ?? null,
+    visKm: h.visKm ?? null,
+    windKph: h.windKph ?? null,
+    gustKph: h.gustKph ?? null,
+    precipMm: h.precipMm ?? null,
+    chanceRain: h.chanceRain ?? null,
+    uv: h.uv ?? null,
+    conditionText: h.condition ?? null,
+    layered: false,
+    aod: null,
+    cloudLow: null,
+    cloudMid: null,
+    cloudHigh: null,
+  })).sort((a, b) => a.t - b.t);
+  return weather.map((row) => mergeSources(
+    row,
+    sampleSeries(om, row.t),
+    sampleSeries(aq, row.t),
+  ));
 }
 
 /** 给"全天云量波动"用的稳健离散度。 */
 export function cloudSpread(series, fromMs, toMs) {
+  if (!series?.length || toMs <= fromMs) return 0;
+  const start = Math.max(fromMs, series[0].t);
+  const end = Math.min(toMs, series[series.length - 1].t);
+  if (end <= start) return 0;
   const vals = [];
+  const startAt = sampleSeries(series, start);
+  if (startAt?.cloudTotal != null) vals.push(startAt.cloudTotal);
   for (const row of series) {
-    if (row.t < fromMs) continue;
-    if (row.t > toMs) break;
+    if (row.t <= start) continue;
+    if (row.t >= end) break;
     if (row.cloudTotal != null) vals.push(row.cloudTotal);
   }
+  const endAt = sampleSeries(series, end);
+  if (endAt?.cloudTotal != null) vals.push(endAt.cloudTotal);
   if (vals.length < 2) return 0;
   const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
   return Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);

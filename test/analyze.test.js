@@ -39,13 +39,13 @@ describe('序列层', () => {
     }
   });
 
-  it('线性插值在两端取端点值，中间取加权', () => {
+  it('线性插值只在覆盖范围内取值，中间取加权', () => {
     const series = [
       { t: 0, cloudLow: 0, layered: true },
       { t: 1000, cloudLow: 100, layered: true },
     ];
-    assert.equal(sampleSeries(series, -500).cloudLow, 0);
-    assert.equal(sampleSeries(series, 5000).cloudLow, 100);
+    assert.equal(sampleSeries(series, -500), null);
+    assert.equal(sampleSeries(series, 5000), null);
     const mid = sampleSeries(series, 250);
     assert.ok(Math.abs(mid.cloudLow - 25) < 1e-9);
   });
@@ -177,6 +177,42 @@ describe('事件编排', () => {
     assert.ok(ev.confidence < 0.9);
     assert.ok(ev.notes.some((n) => n.includes('分层云量')));
     assert.ok(ev.weather.layered === false);
+  });
+
+  it('窗口开头缺天气时继续评估已覆盖时段，并降低置信度', () => {
+    const { wa, series } = buildFixture({ days: 1, scenarios: ['big'] });
+    const [event] = analyzeEvents({
+      lat: LAT, lon: LON, tz: TZ, layered: true, eventFilter: 'sunset',
+      series: series.filter((row) => row.t >= Date.parse(`${START}T09:00:00Z`)),
+      days: wa.days,
+    });
+    assert.ok(event, '不能因为窗口第一个采样点缺失就放弃整个窗口');
+    assert.ok(event.confidence < 0.94);
+    assert.ok(event.notes.some((note) => note.includes('未完整覆盖')));
+  });
+
+  it('天气完全未覆盖日落窗口时不构造事件', () => {
+    const { wa, series } = buildFixture({ days: 1 });
+    const events = analyzeEvents({
+      lat: LAT, lon: LON, tz: TZ, layered: true, eventFilter: 'sunset',
+      series: series.filter((row) => row.t >= Date.parse(`${START}T10:00:00Z`)),
+      days: wa.days,
+    });
+    assert.deepEqual(events, []);
+  });
+
+  it('即使峰值有真实分层云，窗口其它时段推断仍须扣置信度', () => {
+    const { wa, series } = buildFixture({ days: 1, scenarios: ['big'] });
+    const partial = series.map((row) => row.t >= Date.parse(`${START}T10:00:00Z`)
+      ? { ...row, layered: false }
+      : row);
+    const [event] = analyzeEvents({
+      lat: LAT, lon: LON, tz: TZ, layered: true, eventFilter: 'sunset',
+      series: partial, days: wa.days,
+    });
+    assert.equal(event.weather.layered, true);
+    assert.ok(event.confidence < 0.94);
+    assert.ok(event.notes.some((note) => note.includes('分层云量') && note.includes('推断')));
   });
 
   it('pickBestEvent 优先未结束的事件', () => {

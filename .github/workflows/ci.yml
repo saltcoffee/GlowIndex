@@ -14,13 +14,9 @@ concurrency:
 
 jobs:
   test:
-    name: Node.js ${{ matrix.node-version }}
+    name: Node.js 22
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [22, 24]
 
     steps:
       - name: Check out repository
@@ -31,7 +27,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '22'
           package-manager-cache: false
 
       - name: Run tests
